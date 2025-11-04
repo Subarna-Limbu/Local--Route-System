@@ -265,7 +265,9 @@ class LocationConsumer(AsyncWebsocketConsumer):
 
             bus.current_lat = lat_f
             bus.current_lng = lng_f
-            bus.save(update_fields=["current_lat", "current_lng"])
+            from django.utils import timezone
+            bus.updated_at = timezone.now()  # Mark when location was last updated
+            bus.save(update_fields=["current_lat", "current_lng", "updated_at"])
             logger.info(f"Bus {bus.number_plate} location updated: {lat_f}, {lng_f}")
 
             if bus.driver:

@@ -55,6 +55,7 @@ class Bus(models.Model):
     eta_updated_at = models.DateTimeField(null=True, blank=True)
     # Persisted nearest stop index along route (fast checks)
     nearest_stop_index = models.IntegerField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True, blank=True)
 
     def __str__(self):
         return f"{self.number_plate} ({self.total_seats} seats)"

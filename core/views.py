@@ -407,11 +407,27 @@ def homepage(request):
             bus_lng = getattr(bus, 'current_lng', None)
 
             logger.info(f"Bus GPS: lat={bus_lat}, lng={bus_lng}")
+            from django.utils import timezone
+            from datetime import timedelta
+
+            is_stale = False
+            if hasattr(bus, 'updated_at') and bus.updated_at:
+                time_since_update = timezone.now() - bus.updated_at
+                if time_since_update > timedelta(minutes=5):
+                    is_stale = True
+                    logger.warning(
+                        f"⏰ Bus {bus.number_plate} GPS data is STALE "
+                        f"(last update: {time_since_update.seconds//60} minutes ago)"
+                    )
 
             # ⭐ CRITICAL FIX: If no live GPS data, mark as no_location and skip ETA calculation
             # This prevents showing fake ETA when driver hasn't started tracking
-            if bus_lat is None or bus_lng is None:
-                logger.warning(f"❌ Bus {bus.id} ({bus.number_plate}) has NO LIVE GPS! Driver not tracking.")
+            if bus_lat is None or bus_lng is None or is_stale:
+                if is_stale:
+                    logger.warning(f"❌ Bus {bus.id} GPS data STALE! Driver stopped tracking.")
+                else:
+                    logger.warning(f"❌ Bus {bus.id} has NO GPS! Driver not tracking.")
+                
                 buses_info.append({
                     'route': route,
                     'bus': bus,
