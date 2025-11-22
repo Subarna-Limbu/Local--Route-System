@@ -617,7 +617,8 @@ def homepage(request):
         # Filter out passed buses if not showing them
         if not show_passed:
             buses_info = [b for b in buses_info if b.get('status') != 'passed']
-
+        buses_info = [b for b in buses_info if b.get('status') != 'no_location']
+    
     context = {
         'stops': stops,
         'buses_info': buses_info,
