@@ -33,5 +33,6 @@ path('user/forgot-password/', views.user_forgot_password, name='user_forgot_pass
 path('user/verify-reset-otp/', views.user_verify_reset_otp, name='user_verify_reset_otp'),
 path('user/set-new-password/', views.user_set_new_password, name='user_set_new_password'),
  path('api/switch_route/', views.switch_route, name='switch_route'),
+path('api/clear_pickup/', views.clear_pickup, name='clear_pickup'),  
     path('api/route_info/', views.get_route_info, name='get_route_info'),
 ]

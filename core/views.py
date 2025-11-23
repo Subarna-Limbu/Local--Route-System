@@ -1203,7 +1203,25 @@ def track_bus(request, bus_id):
             eta = eta_mins if eta_mins >= 1 else 1
         except Exception:
             eta = None
-
+            
+    available_stops = []
+    if bus and bus.route:
+        route = bus.route
+        all_stops = route.get_stops_list()
+        
+        # If bus has location and nearest_stop_index, filter to only upcoming stops
+        if bus.nearest_stop_index is not None and bus.current_lat and bus.current_lng:
+            available_stops = all_stops[bus.nearest_stop_index:]
+        else:
+            available_stops = all_stops
+    has_active_request = False
+    if request.user.is_authenticated:
+        has_active_request = PickupRequest.objects.filter(
+            user=request.user,
+            bus=bus,
+            cleared_by_driver=False
+        ).exists()
+        
     return render(request, 'user/tracking.html', {
         'bus_id': bus_id,
         'bus': bus,
@@ -1215,6 +1233,8 @@ def track_bus(request, bus_id):
         'default_pickup': default_pickup,
         'eta': eta,
         'pickup_coords': pickup_coords,
+        'available_stops': available_stops,
+        'has_active_request': has_active_request,
     })
 
 
@@ -1244,18 +1264,41 @@ def remove_bookmark(request):
 @login_required
 @require_POST
 def send_pickup_request(request):
+    """Send pickup request with duplicate prevention."""
     try:
         bus_id = int(request.POST.get('bus_id'))
-        stop = request.POST.get('stop')
-        message = request.POST.get('message', '')
+        stop = request.POST.get('stop', '').strip()
+        message = request.POST.get('message', '').strip()
+        
+        if not stop:
+            return JsonResponse({'status': 'error', 'error': 'Please select a stop'})
+        
         bus = Bus.objects.get(id=bus_id)
-        pickup = PickupRequest.objects.create(user=request.user, bus=bus, stop=stop, message=message)
-        # Log the notification payload for auditing
-        try:
-            logger.info('PickupRequest created: id=%s user_id=%s bus_id=%s stop=%s', pickup.id, request.user.id, bus.id, extra={'stop': stop})
-        except Exception:
-            logger.exception('Failed to log pickup creation')
-        # Notify driver via channels group
+        
+        # ⭐ NEW: Check for existing active request
+        existing_request = PickupRequest.objects.filter(
+            user=request.user,
+            bus=bus,
+            cleared_by_driver=False
+        ).first()
+        
+        if existing_request:
+            return JsonResponse({
+                'status': 'error', 
+                'error': f'You already have an active pickup request at {existing_request.stop}'
+            })
+        
+        # Create new pickup request
+        pickup = PickupRequest.objects.create(
+            user=request.user,
+            bus=bus,
+            stop=stop,
+            message=message
+        )
+        
+        logger.info(f'PickupRequest created: id={pickup.id} user={request.user.username}')
+        
+        # Notify driver via channels
         try:
             channel_layer = get_channel_layer()
             if bus.driver and bus.driver.user:
@@ -1264,20 +1307,26 @@ def send_pickup_request(request):
                     'type': 'pickup_notification',
                     'pickup_id': pickup.id,
                     'user_id': request.user.id,
-                    'user_username': getattr(request.user, 'username', None),
+                    'user_username': request.user.username,
                     'bus_id': bus.id,
                     'stop': pickup.stop,
                     'message': pickup.message,
                 }
-                logger.info('Sending pickup_notification to %s payload=%s', driver_group, payload)
                 async_to_sync(channel_layer.group_send)(driver_group, payload)
-        except Exception:
-            pass
-        return JsonResponse({'status': 'success', 'pickup_id': pickup.id})
+        except Exception as e:
+            logger.exception(f'Failed to send notification: {e}')
+        
+        return JsonResponse({
+            'status': 'success',
+            'pickup_id': pickup.id,
+            'message': 'Pickup request sent successfully!'
+        })
+        
+    except Bus.DoesNotExist:
+        return JsonResponse({'status': 'error', 'error': 'Bus not found'})
     except Exception as e:
+        logger.exception(f'send_pickup_request failed: {e}')
         return JsonResponse({'status': 'error', 'error': str(e)})
-
-
 @csrf_exempt
 def compute_eta(request):
     """Compute ETA in minutes from the bus's current location to a pickup location.
@@ -1419,27 +1468,144 @@ def debug_bus_status(request, bus_id):
 
 @login_required
 def driver_notifications(request):
-    # For drivers to see pickup requests targeting their buses
+    """Get driver notifications grouped and ranked by stop order."""
     if not hasattr(request.user, 'driver_profile'):
         return JsonResponse({'status': 'error', 'error': 'Not a driver'})
+    
     driver = request.user.driver_profile
-    pickups = PickupRequest.objects.filter(bus__driver=driver).order_by('-created_at')[:50]
-    unread_count = PickupRequest.objects.filter(bus__driver=driver, seen_by_driver=False).count()
-    data = [
-        {
-            'id': p.id,
-            'user_id': p.user.id,
-            'user': p.user.username,
-            'stop': p.stop,
-            'message': p.message,
-            'status': p.status,
-            'created_at': p.created_at.isoformat(),
-            'seen': p.seen_by_driver,
-        }
-        for p in pickups
-    ]
-    return JsonResponse({'status': 'success', 'pickups': data, 'unread_count': unread_count, 'recent': data[:10]})
-
+    bus = driver.buses.first()
+    
+    # Get all non-cleared pickup requests for this driver's buses
+    pickups = PickupRequest.objects.filter(
+        bus__driver=driver,
+        cleared_by_driver=False
+    ).select_related('user', 'bus').order_by('-created_at')
+    
+    unread_count = pickups.filter(seen_by_driver=False).count()
+    
+    # ⭐ NEW: Group pickups by stop and rank by route order
+    grouped_pickups = {}
+    stop_order_map = {}
+    
+    if bus and bus.route:
+        route_stops = bus.route.get_stops_list()
+        
+        # Create a map of stop name to order index
+        for idx, stop_obj in enumerate(route_stops):
+            stop_order_map[stop_obj.name.lower()] = idx
+        
+        # If bus has current position, filter out passed stops
+        nearest_idx = bus.nearest_stop_index if bus.nearest_stop_index is not None else 0
+        
+        for pickup in pickups:
+            stop_name = pickup.stop
+            stop_key = stop_name.lower()
+            
+            # Get stop order (default to high number if not found in route)
+            stop_order = stop_order_map.get(stop_key, 9999)
+            
+            # Skip stops that bus has already passed
+            if stop_order < nearest_idx:
+                continue
+            
+            if stop_name not in grouped_pickups:
+                grouped_pickups[stop_name] = {
+                    'stop': stop_name,
+                    'order': stop_order,
+                    'passengers': [],
+                    'count': 0,
+                    'earliest_request': pickup.created_at
+                }
+            
+            grouped_pickups[stop_name]['passengers'].append({
+                'id': pickup.id,
+                'user_id': pickup.user.id,
+                'username': pickup.user.username,
+                'message': pickup.message,
+                'created_at': pickup.created_at.isoformat(),
+                'seen': pickup.seen_by_driver,
+            })
+            grouped_pickups[stop_name]['count'] += 1
+    else:
+        # No route or bus - just group by stop name without ordering
+        for pickup in pickups:
+            stop_name = pickup.stop
+            if stop_name not in grouped_pickups:
+                grouped_pickups[stop_name] = {
+                    'stop': stop_name,
+                    'order': 9999,
+                    'passengers': [],
+                    'count': 0,
+                    'earliest_request': pickup.created_at
+                }
+            
+            grouped_pickups[stop_name]['passengers'].append({
+                'id': pickup.id,
+                'user_id': pickup.user.id,
+                'username': pickup.user.username,
+                'message': pickup.message,
+                'created_at': pickup.created_at.isoformat(),
+                'seen': pickup.seen_by_driver,
+            })
+            grouped_pickups[stop_name]['count'] += 1
+    
+    # ⭐ NEW: Sort grouped pickups by stop order (nearest stops first)
+    sorted_groups = sorted(
+        grouped_pickups.values(),
+        key=lambda x: (x['order'], x['earliest_request'])
+    )
+    
+    # Format for response
+    recent_formatted = []
+    for group in sorted_groups:
+        for passenger in group['passengers']:
+            recent_formatted.append({
+                'id': passenger['id'],
+                'user_id': passenger['user_id'],
+                'user': passenger['username'],
+                'stop': group['stop'],
+                'message': passenger['message'],
+                'status': 'pending',
+                'created_at': passenger['created_at'],
+                'seen': passenger['seen'],
+                'passenger_count': group['count'],  # ⭐ NEW
+                'stop_order': group['order'],  # ⭐ NEW
+            })
+    
+    return JsonResponse({
+        'status': 'success',
+        'pickups': recent_formatted,
+        'grouped_stops': sorted_groups,  # ⭐ NEW: Grouped data
+        'unread_count': unread_count,
+        'recent': recent_formatted[:20]
+    })
+@login_required
+@require_POST
+def clear_pickup(request):
+    """Clear a specific pickup request (allows passenger to request again)."""
+    try:
+        pickup_id = int(request.POST.get('pickup_id'))
+        pickup = PickupRequest.objects.filter(id=pickup_id).first()
+        
+        if not pickup:
+            return JsonResponse({'status': 'error', 'error': 'Pickup request not found'})
+        
+        # Ensure driver owns the bus
+        if not hasattr(request.user, 'driver_profile') or pickup.bus.driver != request.user.driver_profile:
+            return JsonResponse({'status': 'error', 'error': 'Unauthorized'})
+        
+        # Mark as cleared (passenger can now request again)
+        pickup.cleared_by_driver = True
+        pickup.seen_by_driver = True
+        pickup.save(update_fields=['cleared_by_driver', 'seen_by_driver'])
+        
+        logger.info(f'Pickup {pickup_id} cleared by driver {request.user.username}')
+        
+        return JsonResponse({'status': 'success'})
+        
+    except Exception as e:
+        logger.exception(f'clear_pickup failed: {e}')
+        return JsonResponse({'status': 'error', 'error': str(e)})
 
 def user_profile(request, user_id):
     try:
@@ -1502,15 +1668,26 @@ def mark_pickup_seen(request):
 @login_required
 @require_POST
 def clear_all_pickups(request):
+    """Mark all pickups as cleared for this driver."""
     try:
         if not hasattr(request.user, 'driver_profile'):
             return JsonResponse({'status': 'error', 'error': 'Not a driver'})
+        
         driver = request.user.driver_profile
-        # mark all pickups for this driver's buses as seen
-        qs = PickupRequest.objects.filter(bus__driver=driver, seen_by_driver=False)
-        count = qs.update(seen_by_driver=True)
+        
+        # Mark all active pickups as cleared
+        qs = PickupRequest.objects.filter(
+            bus__driver=driver,
+            cleared_by_driver=False
+        )
+        count = qs.update(cleared_by_driver=True, seen_by_driver=True)
+        
+        logger.info(f'Driver {request.user.username} cleared {count} pickup requests')
+        
         return JsonResponse({'status': 'ok', 'cleared': count})
+        
     except Exception as e:
+        logger.exception(f'clear_all_pickups failed: {e}')
         return JsonResponse({'status': 'error', 'error': str(e)})
 
 

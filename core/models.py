@@ -196,6 +196,7 @@ class PickupRequest(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
     created_at = models.DateTimeField(auto_now_add=True)
     seen_by_driver = models.BooleanField(default=False)
+    cleared_by_driver = models.BooleanField(default=False) 
 
     def __str__(self):
         return f"PickupRequest({self.user.username} -> {self.bus.number_plate} @ {self.stop})"

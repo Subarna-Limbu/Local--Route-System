@@ -527,24 +527,127 @@
                 </div>
             </div>
 
-            <!-- Notifications Section -->
-            <div class="dashboard-section">
-                <h2 class="section-title">🔔 Pickup Notifications</h2>
-                <div class="notifications-container">
-                    <div class="notifications-header">
-                        <div>
-                            <strong>Notifications</strong>
-                            <span id="notifBadge" class="notifications-badge" style="display: none;">0</span>
-                        </div>
-                        <button id="clearAllNotifs" class="clear-btn">Clear All</button>
-                    </div>
-                    <div id="driverNotifications" class="notifications-list">
-                        <div style="text-align: center; color: #9ca3af; padding: 20px;">
-                            No notifications yet
-                        </div>
-                    </div>
-                </div>
+<!-- Notifications Section -->
+<div class="dashboard-section">
+    <h2 class="section-title">🔔 Pickup Notifications</h2>
+    <div class="notifications-container">
+        <div class="notifications-header">
+            <div>
+                <strong>Notifications</strong>
+                <span id="notifBadge" class="notifications-badge" style="display: none;">0</span>
             </div>
+            <button id="clearAllNotifs" class="clear-btn">Clear All</button>
+        </div>
+        <div id="driverNotifications" class="notifications-list">
+            <div style="text-align: center; color: #9ca3af; padding: 20px;">
+                No notifications yet
+            </div>
+        </div>
+    </div>
+</div>
+<!-- ⭐ UPDATED: Notification styles (add to existing <style> section) -->
+<style>
+/* Notification group styles */
+.notification-group {
+    margin-bottom: 16px;
+    border: 2px solid #e5e7eb;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.notification-group-header {
+    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+    color: white;
+    padding: 12px 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-weight: 700;
+}
+
+.notification-rank {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 50%;
+    font-size: 0.9rem;
+    margin-right: 8px;
+}
+
+.passenger-count-badge {
+    background: rgba(255, 255, 255, 0.3);
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 0.85rem;
+}
+
+.notification-group-passengers {
+    background: white;
+}
+
+.passenger-item {
+    padding: 12px 16px;
+    border-bottom: 1px solid #e5e7eb;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: background 0.2s;
+}
+
+.passenger-item:last-child {
+    border-bottom: none;
+}
+
+.passenger-item:hover {
+    background: #f3f4f6;
+}
+
+.passenger-item.unseen {
+    background: #fef3c7;
+}
+
+.passenger-info {
+    flex: 1;
+}
+
+.passenger-name {
+    font-weight: 600;
+    color: #1f2937;
+    margin-bottom: 4px;
+}
+
+.passenger-message {
+    font-size: 0.85rem;
+    color: #6b7280;
+    margin-top: 4px;
+}
+
+.passenger-time {
+    font-size: 0.75rem;
+    color: #9ca3af;
+    margin-top: 4px;
+}
+
+.clear-passenger-btn {
+    background: #ef4444;
+    color: white;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.2s;
+}
+
+.clear-passenger-btn:hover {
+    background: #dc2626;
+    transform: translateY(-1px);
+}
+</style>
 
             <!-- Chat Section -->
             <div class="dashboard-section">
@@ -1071,13 +1174,12 @@ document.querySelectorAll('.seat-btn').forEach(function(btn) {
         window.location.host + '/ws/chat/' + chatRoom + '/'
     );
 
-    // Socket connection handlers
     driverSocket.onopen = function(){ 
-        console.log('Driver chat socket opened:', chatRoom); 
+        console.log('✅ Driver chat socket opened:', chatRoom); 
     };
     
     driverSocket.onerror = function(error){
-        console.error('Driver WebSocket error:', error);
+        console.error('❌ Driver WebSocket error:', error);
     };
 
     const notifBox = document.getElementById('driverNotifications');
@@ -1086,7 +1188,8 @@ document.querySelectorAll('.seat-btn').forEach(function(btn) {
     const chatInput = document.getElementById('driverChatInput');
     const sendBtn = document.getElementById('driverSendChat');
 
-    // Notification badge management
+    let groupedNotifications = {};  // Store grouped notifications
+
     function setBadge(count){
         if (!notifBadge) return;
         if (count && count > 0) {
@@ -1097,21 +1200,195 @@ document.querySelectorAll('.seat-btn').forEach(function(btn) {
         }
     }
 
-    // Load initial notifications
-    fetch('/driver/notifications/')
-        .then(r => r.json())
-        .then(data => {
-            if (data && typeof data.unread_count !== 'undefined') {
-                setBadge(data.unread_count);
-            }
-            if (data.recent && Array.isArray(data.recent)){
-                notifBox.innerHTML = ''; // Clear placeholder
-                data.recent.forEach(function(p){
-                    addNotification(p);
+    // ⭐ NEW: Render grouped notifications
+    function renderGroupedNotifications() {
+        if (Object.keys(groupedNotifications).length === 0) {
+            notifBox.innerHTML = '<div style="text-align: center; color: #9ca3af; padding: 20px;">No notifications yet</div>';
+            return;
+        }
+
+        // Sort groups by stop order
+        const sortedGroups = Object.values(groupedNotifications).sort((a, b) => {
+            return (a.order || 9999) - (b.order || 9999);
+        });
+
+        let html = '';
+        sortedGroups.forEach((group, index) => {
+            const rankNum = index + 1;
+            const rankEmoji = rankNum === 1 ? '' : rankNum === 2 ? '' : rankNum === 3 ? '' : '📍';
+            
+            html += `
+                <div class="notification-group">
+                    <div class="notification-group-header">
+                        <div style="display: flex; align-items: center;">
+                            <span class="notification-rank">${rankNum}</span>
+                            <span>${rankEmoji} ${group.stop}</span>
+                        </div>
+                        <span class="passenger-count-badge">
+                            ${group.passengers.length} passenger${group.passengers.length > 1 ? 's' : ''}
+                        </span>
+                    </div>
+                    <div class="notification-group-passengers">
+            `;
+            
+            group.passengers.forEach(passenger => {
+                const seenClass = passenger.seen ? '' : 'unseen';
+                const timeStr = new Date(passenger.created_at).toLocaleTimeString();
+                
+                html += `
+                    <div class="passenger-item ${seenClass}" 
+                         data-user-id="${passenger.user_id}"
+                         data-pickup-id="${passenger.id}">
+                        <div class="passenger-info">
+                            <div class="passenger-name">
+                                👤 ${passenger.username}
+                                ${!passenger.seen ? '<span style="color: #f59e0b; margin-left: 8px;">●</span>' : ''}
+                            </div>
+                            ${passenger.message ? `<div class="passenger-message">💬 ${passenger.message}</div>` : ''}
+                            <div class="passenger-time">🕒 ${timeStr}</div>
+                        </div>
+                        <button class="clear-passenger-btn" data-pickup-id="${passenger.id}">
+                            Clear
+                        </button>
+                    </div>
+                `;
+            });
+            
+            html += `
+                    </div>
+                </div>
+            `;
+        });
+
+        notifBox.innerHTML = html;
+        
+        // Add click handlers for passenger items and clear buttons
+        addNotificationHandlers();
+    }
+
+    // ⭐ NEW: Add handlers for passenger items
+    function addNotificationHandlers() {
+        // Click on passenger to load chat
+        document.querySelectorAll('.passenger-item').forEach(item => {
+            item.addEventListener('click', function(e) {
+                // Don't trigger if clicking the clear button
+                if (e.target.classList.contains('clear-passenger-btn')) {
+                    return;
+                }
+                
+                const userId = this.getAttribute('data-user-id');
+                const pickupId = this.getAttribute('data-pickup-id');
+                
+                // Mark as selected
+                document.querySelectorAll('.passenger-item').forEach(i => {
+                    i.style.background = '';
                 });
-            }
-        })
-        .catch(console.error);
+                this.style.background = '#dbeafe';
+                
+                // Mark as seen
+                if (pickupId) {
+                    markPickupSeen(pickupId);
+                }
+                
+                // Load chat history
+                if (userId) {
+                    loadChatHistory(userId);
+                }
+            });
+        });
+
+        // Clear individual pickup
+        document.querySelectorAll('.clear-passenger-btn').forEach(btn => {
+            btn.addEventListener('click', function(e) {
+                e.stopPropagation();
+                
+                const pickupId = this.getAttribute('data-pickup-id');
+                if (!pickupId) return;
+                
+                if (!confirm('Clear this pickup request?')) return;
+                
+                // Disable button during request
+                this.disabled = true;
+                this.textContent = 'Clearing...';
+                
+                fetch('/api/clear_pickup/', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'X-CSRFToken': '{{ csrf_token }}'
+                    },
+                    body: 'pickup_id=' + encodeURIComponent(pickupId)
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        // Reload notifications
+                        loadNotifications();
+                    } else {
+                        alert('Failed to clear pickup request');
+                        this.disabled = false;
+                        this.textContent = 'Clear';
+                    }
+                })
+                .catch(error => {
+                    console.error('Clear pickup error:', error);
+                    alert('Network error');
+                    this.disabled = false;
+                    this.textContent = 'Clear';
+                });
+            });
+        });
+    }
+
+    // ⭐ NEW: Load notifications with grouping
+    function loadNotifications() {
+        fetch('/driver/notifications/')
+            .then(r => r.json())
+            .then(data => {
+                if (data && data.status === 'success') {
+                    console.log('📊 Loaded notifications:', data);
+                    
+                    // Update badge
+                    setBadge(data.unread_count || 0);
+                    
+                    // Group notifications by stop
+                    groupedNotifications = {};
+                    
+                    if (data.grouped_stops && Array.isArray(data.grouped_stops)) {
+                        data.grouped_stops.forEach(group => {
+                            groupedNotifications[group.stop] = group;
+                        });
+                    } else if (data.pickups && Array.isArray(data.pickups)) {
+                        // Fallback: group manually if server didn't provide grouped_stops
+                        data.pickups.forEach(pickup => {
+                            if (!groupedNotifications[pickup.stop]) {
+                                groupedNotifications[pickup.stop] = {
+                                    stop: pickup.stop,
+                                    order: pickup.stop_order || 9999,
+                                    passengers: []
+                                };
+                            }
+                            groupedNotifications[pickup.stop].passengers.push({
+                                id: pickup.id,
+                                user_id: pickup.user_id,
+                                username: pickup.user,
+                                message: pickup.message,
+                                created_at: pickup.created_at,
+                                seen: pickup.seen
+                            });
+                        });
+                    }
+                    
+                    renderGroupedNotifications();
+                }
+            })
+            .catch(error => {
+                console.error('❌ Failed to load notifications:', error);
+            });
+    }
+
+    // Load initial notifications
+    loadNotifications();
 
     // WebSocket message handler
     driverSocket.onmessage = function(e){
@@ -1123,68 +1400,25 @@ document.querySelectorAll('.seat-btn').forEach(function(btn) {
             return;
         }
 
+        console.log('📨 WebSocket message:', data);
+
         if (data.type === 'pickup_notification') {
-            addNotification(data);
-            // Update badge count
-            const current = parseInt(notifBadge.innerText || '0') || 0;
-            setBadge(current + 1);
+            console.log('🔔 New pickup notification received:', data);
+            
+            // Reload notifications to get updated grouping
+            loadNotifications();
+            
+            // Show browser notification if supported
+            if ('Notification' in window && Notification.permission === 'granted') {
+                new Notification('New Pickup Request', {
+                    body: `${data.user_username || 'Passenger'} at ${data.stop}`,
+                    icon: '/static/bus-icon.png'
+                });
+            }
         } else if (data.type === 'chat_message') {
             addChatMessage(data);
         }
     };
-
-    function addNotification(notification) {
-        // Clear placeholder on first notification
-        if (notifBox.innerHTML.includes('No notifications')) {
-            notifBox.innerHTML = '';
-        }
-        
-        const el = document.createElement('div');
-        el.className = 'notification-item';
-        el.innerHTML = `
-            <strong>🚏 Pickup Request</strong><br>
-            From: ${notification.user_username || 'User #' + notification.user_id}<br>
-            Stop: ${notification.stop}<br>
-            <small>${new Date().toLocaleTimeString()}</small>
-        `;
-        el.setAttribute('data-user-id', notification.user_id);
-        el.setAttribute('data-pickup-id', notification.pickup_id || '');
-        
-        el.addEventListener('click', function() {
-            // Mark as selected
-            document.querySelectorAll('.notification-item').forEach(item => {
-                item.classList.remove('selected');
-            });
-            this.classList.add('selected');
-            
-            // Mark as seen and update badge
-            if (notification.pickup_id) {
-                markPickupSeen(notification.pickup_id);
-            }
-            
-            // Load chat history with this user
-            loadChatHistory(notification.user_id);
-        });
-        
-        notifBox.appendChild(el);
-        notifBox.scrollTop = notifBox.scrollHeight;
-    }
-
-    function addChatMessage(message) {
-        // Clear placeholder on first message
-        if (chatLog.innerHTML.includes('Select a notification')) {
-            chatLog.innerHTML = '';
-        }
-        
-        const el = document.createElement('div');
-        el.className = `chat-message ${message.sender_id === {{ request.user.id }} ? 'message-driver' : 'message-user'}`;
-        el.innerHTML = `
-            <strong>${message.sender_name || 'User'}:</strong> ${message.content}<br>
-            <small>${new Date().toLocaleTimeString()}</small>
-        `;
-        chatLog.appendChild(el);
-        chatLog.scrollTop = chatLog.scrollHeight;
-    }
 
     function markPickupSeen(pickupId) {
         fetch('/api/mark_pickup_seen/', {
@@ -1198,8 +1432,8 @@ document.querySelectorAll('.seat-btn').forEach(function(btn) {
         .then(r => r.json())
         .then(data => {
             if (data && data.status === 'ok') {
-                const current = parseInt(notifBadge.innerText || '0') || 1;
-                setBadge(Math.max(0, current - 1));
+                // Reload to update badge count
+                loadNotifications();
             }
         })
         .catch(console.error);
@@ -1223,13 +1457,59 @@ document.querySelectorAll('.seat-btn').forEach(function(btn) {
             .catch(console.error);
     }
 
+    function addChatMessage(message) {
+        if (chatLog.innerHTML.includes('Select a notification')) {
+            chatLog.innerHTML = '';
+        }
+        
+        const el = document.createElement('div');
+        el.className = `chat-message ${message.sender_id === {{ request.user.id }} ? 'message-driver' : 'message-user'}`;
+        el.innerHTML = `
+            <strong>${message.sender_name || 'User'}:</strong> ${message.content}<br>
+            <small>${new Date().toLocaleTimeString()}</small>
+        `;
+        chatLog.appendChild(el);
+        chatLog.scrollTop = chatLog.scrollHeight;
+    }
+
+    // Clear all notifications
+    document.getElementById('clearAllNotifs').addEventListener('click', function(){
+        if (!confirm('Clear all pickup notifications? This will allow passengers to request again.')) return;
+        
+        this.disabled = true;
+        this.textContent = 'Clearing...';
+        
+        fetch('/api/clear_all_pickups/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'X-CSRFToken': '{{ csrf_token }}'
+            }
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data && data.status === 'ok') {
+                groupedNotifications = {};
+                notifBox.innerHTML = '<div style="text-align: center; color: #9ca3af; padding: 20px;">No notifications yet</div>';
+                setBadge(0);
+            }
+            this.disabled = false;
+            this.textContent = 'Clear All';
+        })
+        .catch(error => {
+            console.error('Clear all error:', error);
+            this.disabled = false;
+            this.textContent = 'Clear All';
+        });
+    });
+
     // Send chat message
     sendBtn.addEventListener('click', function(){
         const content = chatInput.value.trim();
         if (!content) return;
         
-        const selectedNotification = document.querySelector('.notification-item.selected');
-        const recipientId = selectedNotification ? selectedNotification.getAttribute('data-user-id') : null;
+        const selectedItem = document.querySelector('.passenger-item[style*="background"]');
+        const recipientId = selectedItem ? selectedItem.getAttribute('data-user-id') : null;
         
         if (!recipientId) {
             alert('Please select a passenger from notifications first.');
@@ -1247,31 +1527,10 @@ document.querySelectorAll('.seat-btn').forEach(function(btn) {
         chatInput.value = '';
     });
 
-    // Clear all notifications
-    document.getElementById('clearAllNotifs').addEventListener('click', function(){
-        if (!confirm('Clear all pickup notifications?')) return;
-        
-        fetch('/api/clear_all_pickups/', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'X-CSRFToken': '{{ csrf_token }}'
-            }
-        })
-        .then(r => r.json())
-        .then(data => {
-            if (data && data.status === 'ok') {
-                notifBox.innerHTML = '<div style="text-align: center; color: #9ca3af; padding: 20px;">No notifications yet</div>';
-                setBadge(0);
-            }
-        })
-        .catch(console.error);
-    });
-
     // Clear chat
     document.getElementById('clearDriverChat').addEventListener('click', function(){
-        const selectedNotification = document.querySelector('.notification-item.selected');
-        const recipientId = selectedNotification ? selectedNotification.getAttribute('data-user-id') : null;
+        const selectedItem = document.querySelector('.passenger-item[style*="background"]');
+        const recipientId = selectedItem ? selectedItem.getAttribute('data-user-id') : null;
         
         if (!recipientId) {
             alert('Please select a conversation first.');

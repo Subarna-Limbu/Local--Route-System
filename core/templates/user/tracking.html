@@ -509,6 +509,35 @@
             width: 100%;
         }
     }
+   /* Toast notification styles */
+.toast-notification {
+    position: fixed;
+    top: 80px;
+    right: 20px;
+    background: white;
+    padding: 16px 24px;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    z-index: 10000;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 300px;
+    animation: slideInRight 0.3s ease-out;
+}
+
+.toast-notification.success {
+    border-left: 4px solid #10b981;
+}
+
+.toast-notification.error {
+    border-left: 4px solid #ef4444;
+}
+
+@keyframes slideInRight {
+    from { opacity: 0; transform: translateX(100%); }
+    to { opacity: 1; transform: translateX(0); }
+}
 </style>
 {% endblock %}
 
@@ -581,23 +610,49 @@
                 </button>
             </div>
 
-            <!-- Pickup Request -->
-            <div class="pickup-section">
-                <h4 class="pickup-title">📍 Request Pickup</h4>
-                <div class="form-group">
-                    <label class="form-label">Pickup Location *</label>
-                    <textarea id="pickupStop" class="form-textarea" rows="2" placeholder="Enter your pickup location">{{ default_pickup }}</textarea>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Optional Message</label>
-                    <input id="pickupMsg" class="form-input" placeholder="Add any special instructions" />
-                </div>
-                <button id="sendPickup" class="send-btn">
-                    📤 Send Pickup Request
-                </button>
-            </div>
+ <!-- Pickup Request -->
+<div class="pickup-section">
+    <h4 class="pickup-title">📍 Request Pickup</h4>
+    
+    {% if has_active_request %}
+        <div style="background: #2fbf2cff; border: 2px solid #09b02dff; padding: 20px; border-radius: 8px; text-align: center;">
+            <p style="color: #ffffffff; font-weight: 600; margin: 0;">
+                Your Pickup Request Stops  has been sent.
+            </p>
+            {% comment %} <p style="color: #92400e; font-size: 0.9rem; margin-top: 8px;">
+                Please wait for the driver to respond.
+            </p> {% endcomment %}
         </div>
-
+    {% else %}
+        <div class="form-group">
+            <label class="form-label">Pickup Location *</label>
+            {% if available_stops %}
+                <select id="pickupStop" class="form-input" required>
+                    <option value="">-- Select your pickup stop --</option>
+                    {% for stop in available_stops %}
+                        <option value="{{ stop.name }}">{{ stop.name }}</option>
+                    {% endfor %}
+                </select>
+                <p style="font-size: 0.85rem; color: #6b7280; margin-top: 6px;">
+                    ℹ️ Only showing upcoming stops
+                </p>
+            {% else %}
+                <select id="pickupStop" class="form-input" disabled>
+                    <option value="">No stops available</option>
+                </select>
+            {% endif %}
+        </div>
+        
+        <div class="form-group">
+            <label class="form-label">Optional Message</label>
+            <input id="pickupMsg" class="form-input" placeholder="Special instructions" />
+        </div>
+        
+        <button id="sendPickup" class="send-btn" {% if not available_stops %}disabled{% endif %}>
+            📤 Send Pickup Request
+        </button>
+    {% endif %}
+</div>
         <!-- Chat Section -->
         <div class="chat-section">
             <div class="chat-container">
@@ -629,6 +684,28 @@
 {% block extra_scripts %}
 <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 <script>
+    // Toast notification function
+function showToast(title, message, type = 'success') {
+    const existingToast = document.querySelector('.toast-notification');
+    if (existingToast) existingToast.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = `toast-notification ${type}`;
+    toast.innerHTML = `
+        <div class="toast-icon">${type === 'success' ? '✅' : '❌'}</div>
+        <div class="toast-content">
+            <div class="toast-title">${title}</div>
+            <div class="toast-message">${message}</div>
+        </div>
+    `;
+    
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.animation = 'slideOutRight 0.3s ease-out';
+        setTimeout(() => toast.remove(), 300);
+    }, 3000);
+}
     const busId = "{{ bus_id }}";
     
     // Initialize map
@@ -1423,7 +1500,8 @@ socket.onmessage = function(event) {
         });
     }
 
-    // Pickup request functionality
+    // Updated pickup request handler
+{% if user.is_authenticated and not has_active_request %}
     const sendPickupBtn = document.getElementById('sendPickup');
     if (sendPickupBtn) {
         sendPickupBtn.addEventListener('click', function() {
@@ -1431,11 +1509,10 @@ socket.onmessage = function(event) {
             const message = document.getElementById('pickupMsg').value.trim();
             
             if (!stop) {
-                showToast('Please enter a pickup location', 'error');
+                showToast('Error', 'Please select a pickup stop', 'error');
                 return;
             }
 
-            const originalText = sendPickupBtn.innerHTML;
             sendPickupBtn.disabled = true;
             sendPickupBtn.innerHTML = '⏳ Sending...';
 
@@ -1445,29 +1522,28 @@ socket.onmessage = function(event) {
                     'Content-Type': 'application/x-www-form-urlencoded',
                     'X-CSRFToken': '{{ csrf_token }}'
                 },
-                body: 'bus_id=' + encodeURIComponent(busId) + 
-                      '&stop=' + encodeURIComponent(stop) + 
+                body: 'bus_id=' + busId + '&stop=' + encodeURIComponent(stop) + 
                       '&message=' + encodeURIComponent(message)
             })
             .then(response => response.json())
             .then(data => {
                 if (data.status === 'success') {
-                    showToast('Pickup request sent successfully!', 'success');
-                    document.getElementById('pickupMsg').value = '';
+                    showToast('Request Sent!', data.message, 'success');
+                    setTimeout(() => window.location.reload(), 2000);
                 } else {
-                    showToast('Error: ' + (data.error || 'Failed to send request'), 'error');
+                    showToast('Error', data.error, 'error');
+                    sendPickupBtn.disabled = false;
+                    sendPickupBtn.innerHTML = '📤 Send Pickup Request';
                 }
             })
             .catch(error => {
-                console.error('Pickup request error:', error);
-                showToast('Network error', 'error');
-            })
-            .finally(() => {
+                showToast('Error', 'Network error', 'error');
                 sendPickupBtn.disabled = false;
-                sendPickupBtn.innerHTML = originalText;
+                sendPickupBtn.innerHTML = '📤 Send Pickup Request';
             });
         });
     }
+{% endif %}
 
     // Chat functionality
     const chatRoom = "{{ chat_room }}";
