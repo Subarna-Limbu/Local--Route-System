@@ -1552,7 +1552,7 @@ def driver_notifications(request):
     # ⭐ NEW: Sort grouped pickups by stop order (nearest stops first)
     sorted_groups = sorted(
         grouped_pickups.values(),
-        key=lambda x: (x['order'], x['earliest_request'])
+        key=lambda x: (x['order'], -x['count'], x['earliest_request'])
     )
     
     # Format for response
