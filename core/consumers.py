@@ -9,7 +9,372 @@ logger = logging.getLogger(__name__)
 
 User = get_user_model()
 
+# class LocationConsumer(AsyncWebsocketConsumer):
+#     """WebSocket consumer for bus location updates."""
 
+#     async def connect(self):
+#         self.bus_id = self.scope["url_route"]["kwargs"].get("bus_id")
+#         self.group_name = f"bus_{self.bus_id}"
+#         self.sequence_number = 0
+#         self.is_driver = False
+
+#         await self.channel_layer.group_add(self.group_name, self.channel_name)
+#         await self.accept()
+
+#         user = self.scope.get("user")
+#         logger.info(
+#             f'LocationConsumer connected: bus_id={self.bus_id}, user={getattr(user, "id", None)}'
+#         )
+
+#         # Check if this is the driver connecting
+#         if user and getattr(user, "is_authenticated", False):
+#             self.is_driver = await self._is_driver_for_bus(user.id, self.bus_id)
+#             logger.info(f"Connection is_driver={self.is_driver}")
+
+#         # For passengers, send last known location
+#         if not self.is_driver:
+#             last_location = await self._get_last_bus_location(self.bus_id)
+
+#             if last_location:
+#                 lat, lng = last_location
+#                 logger.info(
+#                     f"📍 Sending last known location to passenger: lat={lat}, lng={lng}"
+#                 )
+
+#                 await self.send(
+#                     text_data=json.dumps(
+#                         {
+#                             "type": "location_update",
+#                             "lat": lat,
+#                             "lng": lng,
+#                             "is_historical": True,
+#                             "sequence": -1,
+#                         }
+#                     )
+#                 )
+
+#                 await self.send(
+#                     text_data=json.dumps(
+#                         {
+#                             "type": "tracking_status",
+#                             "status": "waiting",
+#                             "message": "Waiting for driver to start tracking...",
+#                         }
+#                     )
+#                 )
+#             else:
+#                 logger.warning(f"⚠️ No location data found for bus {self.bus_id}")
+#                 await self.send(
+#                     text_data=json.dumps(
+#                         {
+#                             "type": "tracking_status",
+#                             "status": "waiting",
+#                             "message": "Waiting for driver to start tracking...",
+#                         }
+#                     )
+#                 )
+
+#     @database_sync_to_async
+#     def _is_driver_for_bus(self, user_id, bus_id):
+#         """Check if this user is the driver for this bus"""
+#         try:
+#             bus = Bus.objects.select_related("driver__user").filter(id=bus_id).first()
+#             if bus and bus.driver and bus.driver.user_id == user_id:
+#                 return True
+#             return False
+#         except Exception as e:
+#             logger.exception(f"Error checking if user is driver: {e}")
+#             return False
+
+#     @database_sync_to_async
+#     def _get_last_bus_location(self, bus_id):
+#         """Get the last known location from database"""
+#         try:
+#             bus = Bus.objects.filter(id=bus_id).first()
+#             if not bus:
+#                 logger.error(f"Bus not found: id={bus_id}")
+#                 return None
+#             if bus.current_lat and bus.current_lng:
+#                 logger.info(
+#                     f"✅ Found last location for bus {bus.number_plate}: {bus.current_lat}, {bus.current_lng}"
+#                 )
+#                 return (bus.current_lat, bus.current_lng)
+#             else:
+#                 logger.warning(f"❌ No location data for bus {bus.number_plate}")
+#                 return None
+#         except Exception as e:
+#             logger.exception(f"Error retrieving last bus location: {e}")
+#             return None
+
+#     async def disconnect(self, close_code):
+#         # Only clear location if this is the DRIVER disconnecting
+#         if self.is_driver:
+#             logger.info(f"🚗 DRIVER disconnecting - clearing bus location")
+#             await self._clear_bus_location(self.bus_id)
+
+#             # Notify all connected passengers that tracking stopped
+#             await self.channel_layer.group_send(
+#                 self.group_name,
+#                 {
+#                     "type": "tracking_status",
+#                     "status": "disconnected",
+#                     "message": "Driver stopped tracking",
+#                 },
+#             )
+#         else:
+#             logger.info(f"👤 Passenger disconnecting - keeping bus location")
+
+#         await self.channel_layer.group_discard(self.group_name, self.channel_name)
+#         logger.info(
+#             f"LocationConsumer disconnected: bus_id={self.bus_id}, code={close_code}"
+#         )
+
+#     async def receive(self, text_data=None, bytes_data=None):
+#         try:
+#             data = json.loads(text_data)
+#             logger.info(f"LocationConsumer received: {data}")
+#         except Exception as e:
+#             logger.error(f"LocationConsumer JSON parse error: {e}")
+#             return
+
+#         if data.get("type") == "location":
+#             # Only accept location updates from drivers
+#             if not self.is_driver:
+#                 logger.warning(f"Rejecting location update from non-driver")
+#                 return
+
+#             lat = data.get("lat")
+#             lng = data.get("lng")
+
+#             if lat is None or lng is None:
+#                 logger.warning(f"LocationConsumer: Missing lat/lng in data")
+#                 return
+
+#             # Save location to database
+#             saved = await self._save_bus_location(self.bus_id, lat, lng)
+
+#             if saved:
+#                 self.sequence_number += 1
+#                 logger.info(
+#                     f"✅ Location saved: bus_id={self.bus_id}, lat={lat}, lng={lng}, seq={self.sequence_number}"
+#                 )
+
+#                 # On first location update, send "connected" status
+#                 if self.sequence_number == 1:
+#                     await self.channel_layer.group_send(
+#                         self.group_name,
+#                         {
+#                             "type": "tracking_status",
+#                             "status": "connected",
+#                             "message": "Driver started tracking",
+#                         },
+#                     )
+
+#                 # Broadcast to all connected clients
+#                 await self.channel_layer.group_send(
+#                     self.group_name,
+#                     {
+#                         "type": "location_update",
+#                         "lat": lat,
+#                         "lng": lng,
+#                         "is_historical": False,
+#                         "sequence": self.sequence_number,
+#                     },
+#                 )
+#             else:
+#                 logger.debug(f"⏭️ Location update skipped (minimal movement)")
+
+#     async def location_update(self, event):
+#         """Send location update to WebSocket client"""
+#         await self.send(
+#             text_data=json.dumps(
+#                 {
+#                     "type": "location_update",
+#                     "lat": event.get("lat"),
+#                     "lng": event.get("lng"),
+#                     "is_historical": event.get("is_historical", False),
+#                     "sequence": event.get("sequence", 0),
+#                 }
+#             )
+#         )
+
+#     async def tracking_status(self, event):
+#         """Send tracking status update to WebSocket client"""
+#         await self.send(
+#             text_data=json.dumps(
+#                 {
+#                     "type": "tracking_status",
+#                     "status": event.get("status"),
+#                     "message": event.get("message"),
+#                 }
+#             )
+#         )
+
+#     async def seat_update(self, event):
+#         """Broadcast seat availability updates to connected clients."""
+#         try:
+#             await self.send(
+#                 text_data=json.dumps(
+#                     {
+#                         "type": "seat_update",
+#                         "seat_id": event.get("seat_id"),
+#                         "is_available": event.get("is_available"),
+#                         "seat_number": event.get("seat_number"),
+#                         "bus_id": event.get("bus_id"),
+#                     }
+#                 )
+#             )
+#         except Exception as e:
+#             logger.exception(f"Failed to send seat_update: {e}")
+
+#     @database_sync_to_async
+#     def _save_bus_location(self, bus_id, lat, lng):
+#         """Save bus location to database with good filtering"""
+#         try:
+#             lat_f = float(lat)
+#             lng_f = float(lng)
+
+#             bus = Bus.objects.filter(id=bus_id).first()
+#             if not bus:
+#                 logger.error(f"Bus not found: id={bus_id}")
+#                 return False
+
+#             # Anti-jitter filter: only update if moved at least 10 meters
+#             MIN_MOVEMENT_METERS = 10
+#             if bus.current_lat and bus.current_lng:
+#                 import math
+
+#                 R = 6371000
+#                 phi1 = math.radians(bus.current_lat)
+#                 phi2 = math.radians(lat_f)
+#                 dphi = math.radians(lat_f - bus.current_lat)
+#                 dlambda = math.radians(lng_f - bus.current_lng)
+#                 a = (
+#                     math.sin(dphi / 2) ** 2
+#                     + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+#                 )
+#                 c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+#                 distance_m = R * c
+
+#                 if distance_m < MIN_MOVEMENT_METERS:
+#                     logger.debug(f"⏭️ Skipping update - moved only {distance_m:.1f}m")
+#                     return False
+
+#             # Update bus location
+#             bus.current_lat = lat_f
+#             bus.current_lng = lng_f
+#             from django.utils import timezone
+#             bus.updated_at = timezone.now()
+#             bus.save(update_fields=["current_lat", "current_lng", "updated_at"])
+#             logger.info(f"Bus {bus.number_plate} location updated: {lat_f}, {lng_f}")
+
+#             # Update driver location
+#             if bus.driver:
+#                 bus.driver.current_lat = lat_f
+#                 bus.driver.current_lng = lng_f
+#                 bus.driver.save(update_fields=["current_lat", "current_lng"])
+
+#             # Calculate nearest stop and ETA
+#             try:
+#                 route = getattr(bus, "route", None)
+#                 if route:
+#                     stops = route.get_stops_list()
+#                     if stops:
+#                         import math
+
+#                         def haversine(lat1, lon1, lat2, lon2):
+#                             R = 6371
+#                             phi1 = math.radians(lat1)
+#                             phi2 = math.radians(lat2)
+#                             dphi = math.radians(lat2 - lat1)
+#                             dlambda = math.radians(lon2 - lon1)
+#                             a = (
+#                                 math.sin(dphi / 2) ** 2
+#                                 + math.cos(phi1)
+#                                 * math.cos(phi2)
+#                                 * math.sin(dlambda / 2) ** 2
+#                             )
+#                             c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+#                             return R * c
+
+#                         nearest_idx = min(
+#                             range(len(stops)),
+#                             key=lambda i: haversine(
+#                                 lat_f, lng_f, stops[i].latitude, stops[i].longitude
+#                             ),
+#                         )
+#                         bus.nearest_stop_index = nearest_idx
+
+#                         dist_km = haversine(
+#                             lat_f,
+#                             lng_f,
+#                             stops[nearest_idx].latitude,
+#                             stops[nearest_idx].longitude,
+#                         )
+#                         avg_speed_kmh = 25
+#                         eta_seconds = int((dist_km / avg_speed_kmh) * 3600)
+#                         bus.eta_seconds = max(1, eta_seconds)
+
+#                         if bus.eta_smoothed_seconds:
+#                             alpha = 0.3
+#                             bus.eta_smoothed_seconds = (
+#                                 alpha * bus.eta_seconds
+#                                 + (1 - alpha) * bus.eta_smoothed_seconds
+#                             )
+#                         else:
+#                             bus.eta_smoothed_seconds = float(bus.eta_seconds)
+
+#                         bus.save(
+#                             update_fields=[
+#                                 "nearest_stop_index",
+#                                 "eta_seconds",
+#                                 "eta_smoothed_seconds",
+#                             ]
+#                         )
+#             except Exception as e:
+#                 logger.exception(f"Error calculating nearest stop: {e}")
+
+#             return True
+
+#         except Exception as e:
+#             logger.exception(f"Error saving bus location: {e}")
+#             return False
+
+#     False@database_sync_to_async
+#     def _clear_bus_location(self, bus_id):
+#         """Clear bus location when driver stops tracking"""
+#         try:
+#             bus = Bus.objects.filter(id=bus_id).first()
+#             if not bus:
+#                 logger.warning(f"Bus not found for clearing: id={bus_id}")
+#                 return False
+
+#             bus.current_lat = None
+#             bus.current_lng = None
+#             bus.nearest_stop_index = None
+#             bus.eta_seconds = None
+#             bus.eta_smoothed_seconds = None
+#             bus.save(
+#                 update_fields=[
+#                     "current_lat",
+#                     "current_lng",
+#                     "nearest_stop_index",
+#                     "eta_seconds",
+#                     "eta_smoothed_seconds",
+#                 ]
+#             )
+#             logger.info(f"✅ Cleared location for bus {bus.number_plate}")
+
+#             if bus.driver:
+#                 bus.driver.current_lat = None
+#                 bus.driver.current_lng = None
+#                 bus.driver.save(update_fields=["current_lat", "current_lng"])
+
+#             return True
+
+#         except Exception as e:
+#             logger.exception(f"Error clearing bus location: {e}")
+#             return 
 class LocationConsumer(AsyncWebsocketConsumer):
     """WebSocket consumer for bus location updates."""
 
@@ -563,7 +928,23 @@ class ChatConsumer(AsyncWebsocketConsumer):
             except Exception:
                 pass
 
-        if not recipient_id or not content:
+        # ⭐ NEW: If still no recipient, log error and send feedback
+        if not recipient_id:
+            logger.error(
+                "ChatConsumer: No recipient_id provided and could not resolve. "
+                "sender=%s, bus_id=%s",
+                sender.id,
+                bus_id
+            )
+            # Send error back to sender
+            await self.send(text_data=json.dumps({
+                'type': 'error',
+                'message': 'Please select a passenger from notifications first'
+            }))
+            return
+
+        if not content:
+            logger.warning("ChatConsumer: Empty content, ignoring")
             return
 
         # Persist the message

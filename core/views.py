@@ -1492,10 +1492,10 @@ def driver_notifications(request):
         
         # Create a map of stop name to order index
         for idx, stop_obj in enumerate(route_stops):
-            stop_order_map[stop_obj.name.lower()] = idx
+            stop_order_map[stop_obj.name.lower()] = idx +1
         
         # If bus has current position, filter out passed stops
-        nearest_idx = bus.nearest_stop_index if bus.nearest_stop_index is not None else 0
+        nearest_idx = (bus.nearest_stop_index + 1) if bus.nearest_stop_index is not None else 1
         
         for pickup in pickups:
             stop_name = pickup.stop
@@ -1552,7 +1552,7 @@ def driver_notifications(request):
     # ⭐ NEW: Sort grouped pickups by stop order (nearest stops first)
     sorted_groups = sorted(
         grouped_pickups.values(),
-        key=lambda x: (x['order'], -x['count'], x['earliest_request'])
+        key=lambda x: x['order']
     )
     
     # Format for response

@@ -726,12 +726,9 @@ const startBtn = document.getElementById('startTracking');
 const stopBtn = document.getElementById('stopTracking');
 const status = document.getElementById('trackingStatus');
 
-// Minimum distance (meters) before sending update
-const MIN_DISTANCE_CHANGE = 10;
-
 // Calculate distance between two coordinates
 function calculateDistance(lat1, lon1, lat2, lon2) {
-    const R = 6371e3; // Earth radius in meters
+    const R = 6371e3;
     const φ1 = lat1 * Math.PI / 180;
     const φ2 = lat2 * Math.PI / 180;
     const Δφ = (lat2 - lat1) * Math.PI / 180;
@@ -741,11 +738,9 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
               Math.cos(φ1) * Math.cos(φ2) *
               Math.sin(Δλ/2) * Math.sin(Δλ/2);
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-
     return R * c;
 }
 
-// Start tracking button
 startBtn.addEventListener('click', function() {
     if (socket && socket.readyState === WebSocket.OPEN) {
         console.log('WebSocket already open');
@@ -757,32 +752,23 @@ startBtn.addEventListener('click', function() {
         status.className = 'tracking-status';
         status.style.backgroundColor = '#fee2e2';
         status.style.color = '#991b1b';
-        status.innerHTML = '❌ Geolocation not supported by your browser.';
+        status.innerHTML = '❌ Geolocation not supported.';
         return;
     }
     
     const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + 
                   window.location.host + '/ws/location/' + busId + '/';
     
-    console.log('Connecting to WebSocket:', wsUrl);
     socket = new WebSocket(wsUrl);
     
     socket.onopen = function() {
         console.log('✅ WebSocket connected');
         status.style.display = 'block';
-        status.innerHTML = '✅ Tracking started successfully!';
+        status.innerHTML = '✅ Tracking started!';
         startBtn.disabled = true;
         stopBtn.disabled = false;
         
         lastSentLocation = null;
-        
-        const geoOptions = {
-            enableHighAccuracy: true,
-            timeout: 15000,
-            maximumAge: 0
-        };
-        
-        console.log('Starting geolocation watch...');
         
         geoWatchId = navigator.geolocation.watchPosition(
             function(position) {
@@ -790,13 +776,15 @@ startBtn.addEventListener('click', function() {
                 const lng = position.coords.longitude;
                 const accuracy = position.coords.accuracy;
                 
-                console.log('📍 Location:', {
-                    lat: lat.toFixed(6),
-                    lng: lng.toFixed(6),
-                    accuracy: accuracy.toFixed(0) + 'm'
-                });
+                console.log('📍 GPS:', lat.toFixed(6), lng.toFixed(6), 'accuracy:', accuracy.toFixed(0) + 'm');
                 
-                // Check if location changed significantly
+                // Ignore very poor accuracy
+                if (accuracy > 50) {
+                    console.log(`⚠️ Poor accuracy (${accuracy.toFixed(0)}m) - skipping`);
+                    return;
+                }
+                
+                // Check if moved significantly (>5m)
                 let shouldSend = true;
                 if (lastSentLocation) {
                     const distance = calculateDistance(
@@ -804,281 +792,53 @@ startBtn.addEventListener('click', function() {
                         lat, lng
                     );
                     
-                    if (distance < MIN_DISTANCE_CHANGE) {
+                    if (distance < 5) {
                         shouldSend = false;
                         console.log(`⏭️ Skipping (moved only ${distance.toFixed(1)}m)`);
                     }
                 }
                 
                 if (shouldSend && socket.readyState === WebSocket.OPEN) {
-                    const data = {
+                    socket.send(JSON.stringify({
                         type: 'location',
                         lat: lat,
                         lng: lng
-                    };
-                    
-                    socket.send(JSON.stringify(data));
-                    lastSentLocation = { lat: lat, lng: lng };
-                    console.log('📤 Location sent to server');
+                    }));
+                    lastSentLocation = { lat, lng };
+                    console.log('📤 Location sent');
                 }
             }, 
             function(error) {
-                console.error('❌ Geolocation error:', error);
-                status.style.backgroundColor = '#fee2e2';
-                status.style.color = '#991b1b';
-                
+                console.error('❌ GPS error:', error);
                 let errorMsg = '❌ GPS Error: ';
                 switch(error.code) {
                     case error.PERMISSION_DENIED:
-                        errorMsg += 'Permission denied. Please enable location access.';
+                        errorMsg += 'Permission denied.';
                         break;
                     case error.POSITION_UNAVAILABLE:
-                        errorMsg += 'Location unavailable. Check GPS is enabled.';
+                        errorMsg += 'Location unavailable.';
                         break;
                     case error.TIMEOUT:
-                        errorMsg += 'Request timeout. Retrying...';
+                        errorMsg += 'Timeout.';
                         break;
-                    default:
-                        errorMsg += error.message;
                 }
                 status.innerHTML = errorMsg;
             }, 
-            geoOptions
+            {
+                enableHighAccuracy: true,
+                timeout: 10000,
+                maximumAge: 0
+            }
         );
-        
-        console.log('✅ Geolocation watch started');
     };
-    
-// ⭐ IMPROVED: Smart GPS filtering - smooth when stationary, raw when moving
-let gpsUpdateInterval = null;
-let lastKnownPosition = null;
-let recentPositions = []; // Track recent positions for movement detection
-const POSITION_BUFFER_SIZE = 3;
-let isDriverMoving = false;
-let gpsReadingsCount = 0; // ⭐ ADD THIS
-let gpsStabilized = false; // ⭐ ADD THIS
-let firstGoodReading = false;
-
-// ⭐ Detect if driver is actually moving
-function detectMovement(lat, lng) {
-    recentPositions.push({ lat, lng, timestamp: Date.now() });
-    
-    // Keep only last 3 positions
-    if (recentPositions.length > POSITION_BUFFER_SIZE) {
-        recentPositions.shift();
-    }
-    
-    // Need at least 2 positions to detect movement
-    if (recentPositions.length < 2) {
-        return false;
-    }
-    
-    // Check if driver moved significantly in last 2 readings
-    const last = recentPositions[recentPositions.length - 1];
-    const previous = recentPositions[recentPositions.length - 2];
-    
-    const distance = calculateDistance(
-        previous.lat, previous.lng,
-        last.lat, last.lng
-    );
-    
-    // Driver is moving if traveled >5m between readings
-    return distance > 20;
-}
-
-// ⭐ Simple noise filter - only removes small jitter
-function filterJitter(lat, lng) {
-    if (recentPositions.length === 0) {
-        return { lat, lng };
-    }
-    
-    const last = recentPositions[recentPositions.length - 1];
-    const distance = calculateDistance(last.lat, last.lng, lat, lng);
-
-    // If movement < 15m, assume it's GPS noise and keep previous position
-    if (distance < 15) {
-        return { lat: last.lat, lng: last.lng };
-    }
-    
-    // Otherwise use the new position (driver is actually moving)
-    return { lat, lng };
-}
-
-socket.onopen = function() {
-    console.log('✅ WebSocket connected');
-    status.style.display = 'block';
-    status.innerHTML = '✅ Tracking started successfully!';
-    startBtn.disabled = true;
-    stopBtn.disabled = false;
-    
-    lastSentLocation = null;
-    recentPositions = []; // ⭐ Reset
-    isDriverMoving = false;
-        gpsReadingsCount = 0; // ⭐ RESET
-    gpsStabilized = false; // ⭐ RESET
-    
-    const geoOptions = {
-        enableHighAccuracy: true,
-        timeout: 15000,
-        maximumAge: 0
-    };
-    
-    console.log('Starting geolocation watch...');
-    
- geoWatchId = navigator.geolocation.watchPosition(
-    function(position) {
-        const rawLat = position.coords.latitude;
-        const rawLng = position.coords.longitude;
-        const accuracy = position.coords.accuracy;
-        
-        // ⭐ SMART WARMUP: Accept if accuracy is good, regardless of reading count
-        if (!gpsStabilized) {
-            if (accuracy <= 30) {
-                // GPS accuracy is good enough - start immediately!
-                gpsStabilized = true;
-                firstGoodReading = true;
-                status.innerHTML = '✅ GPS locked! Tracking active.';
-                console.log(`✅ GPS stabilized immediately (accuracy: ${accuracy.toFixed(0)}m)`);
-            } else {
-                // Still waiting for good accuracy
-                console.log(`🔄 GPS warming up... (accuracy: ${accuracy.toFixed(0)}m, need <30m)`);
-                status.innerHTML = `🔄 GPS warming up... (accuracy: ${accuracy.toFixed(0)}m)`;
-                return; // ⭐ Skip this reading
-            }
-        }
-        
-        // ⭐ After stabilization, still ignore readings with accuracy >50m
-        if (accuracy > 50) {
-            console.log(`⚠️ Ignoring low-accuracy GPS: ${accuracy.toFixed(0)}m`);
-            return;
-        }
-
-        // ⭐ NEW: Completely reject terrible accuracy
-if (accuracy > 100) {
-    console.log(`❌ GPS accuracy too poor: ${accuracy.toFixed(0)}m - skipping completely`);
-    return;
-}
-            
-            // ⭐ Detect if driver is moving
-            const moving = detectMovement(rawLat, rawLng);
-            
-            let lat, lng;
-            
-            if (moving) {
-                // ⭐ Driver is MOVING - use RAW GPS (no smoothing)
-                lat = rawLat;
-                lng = rawLng;
-                isDriverMoving = true;
-                console.log(`🚗 MOVING: Using raw GPS (${lat.toFixed(6)}, ${lng.toFixed(6)})`);
-            } else {
-                // ⭐ Driver is STATIONARY - filter small jitter
-                const filtered = filterJitter(rawLat, rawLng);
-                lat = filtered.lat;
-                lng = filtered.lng;
-                isDriverMoving = false;
-                console.log(`🛑 STATIONARY: Using filtered GPS (raw was ${rawLat.toFixed(6)}, ${rawLng.toFixed(6)})`);
-            }
-            
-            // Update last known position
-            lastKnownPosition = { lat, lng, accuracy, moving };
-            
-            console.log('📍 GPS:', {
-                raw: `${rawLat.toFixed(6)}, ${rawLng.toFixed(6)}`,
-                used: `${lat.toFixed(6)}, ${lng.toFixed(6)}`,
-                accuracy: accuracy.toFixed(0) + 'm',
-                moving: moving ? 'YES' : 'NO'
-            });
-        },
-        function(error) {
-            console.error('❌ Geolocation error:', error);
-            status.style.backgroundColor = '#fee2e2';
-            status.style.color = '#991b1b';
-            
-            let errorMsg = '❌ GPS Error: ';
-            switch(error.code) {
-                case error.PERMISSION_DENIED:
-                    errorMsg += 'Permission denied. Please enable location access.';
-                    break;
-                case error.POSITION_UNAVAILABLE:
-                    errorMsg += 'Location unavailable. Check GPS is enabled.';
-                    break;
-                case error.TIMEOUT:
-                    errorMsg += 'Request timeout. Retrying...';
-                    break;
-                default:
-                    errorMsg += error.message;
-            }
-            status.innerHTML = errorMsg;
-        },
-        geoOptions
-    );
-    
-    // ⭐ ADAPTIVE SENDING: Fast when moving, slow when stationary
-    gpsUpdateInterval = setInterval(() => {
-          // ⭐ Don't send until GPS is stabilized
-        if (!gpsStabilized) {
-            return;
-        }
-        if (lastKnownPosition && socket.readyState === WebSocket.OPEN) {
-            const { lat, lng, moving } = lastKnownPosition;
-            
-            // Determine if we should send this update
-            let shouldSend = true;
-            
-            if (lastSentLocation) {
-                const distance = calculateDistance(
-                    lastSentLocation.lat, lastSentLocation.lng,
-                    lat, lng
-                );
-                
-                const timeSinceLastSend = (Date.now() - (lastSentLocation.timestamp || 0)) / 1000;
-                
-                if (moving) {
-                    // ⭐ MOVING: Send if moved >8m OR every 3 seconds
-                    if (distance < 8 && timeSinceLastSend < 3) {
-                        shouldSend = false;
-                    }
-                } else {
-                    // ⭐ STATIONARY: Send only if moved >10m OR every 10 seconds
-                    if (distance < 10 && timeSinceLastSend < 10) {
-                        shouldSend = false;
-                    }
-                }
-            }
-            
-            if (shouldSend) {
-                const data = {
-                    type: 'location',
-                    lat: lat,
-                    lng: lng
-                };
-                
-                socket.send(JSON.stringify(data));
-                lastSentLocation = { lat, lng, timestamp: Date.now() };
-                
-                if (moving) {
-                    console.log('📤 Sent (MOVING)');
-                } else {
-                    console.log('📤 Sent (STATIONARY)');
-                }
-            }
-        }
-    }, 2000); // Check every 2 seconds
-    
-    console.log('✅ GPS: Smart tracking enabled (raw when moving, filtered when stationary)');
-};
     
     socket.onerror = function(error) {
         console.error('❌ WebSocket error:', error);
-        status.style.backgroundColor = '#fee2e2';
-        status.style.color = '#991b1b';
-        status.innerHTML = '❌ Connection error. Check your internet.';
+        status.innerHTML = '❌ Connection error.';
     };
     
-    socket.onclose = function(event) {
+    socket.onclose = function() {
         console.log('⚠️ WebSocket closed');
-        status.style.backgroundColor = '#fef3c7';
-        status.style.color = '#92400e';
         status.innerHTML = '⚠️ Connection closed.';
         startBtn.disabled = false;
         stopBtn.disabled = true;
@@ -1086,15 +846,11 @@ if (accuracy > 100) {
         if (geoWatchId !== null) {
             navigator.geolocation.clearWatch(geoWatchId);
             geoWatchId = null;
-            console.log('🛑 Geolocation watch stopped');
         }
     };
 });
 
-// Stop tracking button
 stopBtn.addEventListener('click', function() {
-    console.log('🛑 Stopping tracking...');
-    
     if (socket) {
         socket.close();
         socket = null;
@@ -1103,64 +859,12 @@ stopBtn.addEventListener('click', function() {
     if (geoWatchId !== null) {
         navigator.geolocation.clearWatch(geoWatchId);
         geoWatchId = null;
-        console.log('✅ Geolocation watch stopped');
-    }
-        // ⭐ ADD THIS LINE - Stop the 1-second interval
-    if (gpsUpdateInterval) {
-        clearInterval(gpsUpdateInterval);
-        gpsUpdateInterval = null;
-        console.log('✅ GPS update interval stopped');
     }
     
-    status.style.backgroundColor = '#f3f4f6';
-    status.style.color = '#374151';
     status.innerHTML = '⏹️ Tracking stopped.';
     startBtn.disabled = false;
     stopBtn.disabled = true;
-    
     lastSentLocation = null;
-    lastKnownPosition = null; // ⭐ ADD THIS LINE
-});
-
-// Prevent accidental page close while tracking
-window.addEventListener('beforeunload', function(e) {
-    if (socket && socket.readyState === WebSocket.OPEN) {
-        e.preventDefault();
-        e.returnValue = 'Location tracking is active. Are you sure?';
-        return e.returnValue;
-    }
-});
-
-
-// Seat toggle functionality
-document.querySelectorAll('.seat-btn').forEach(function(btn) {
-    btn.addEventListener('click', function() {
-        const seatId = this.getAttribute('data-seat-id');
-        
-        fetch('/api/toggle_seat/', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-CSRFToken': '{{ csrf_token }}',
-            },
-            body: JSON.stringify({ seat_id: seatId })
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.status === 'success') {
-                if (data.is_available) {
-                    this.classList.remove('seat-occupied');
-                    this.classList.add('seat-available');
-                } else {
-                    this.classList.remove('seat-available');
-                    this.classList.add('seat-occupied');
-                }
-            }
-        })
-        .catch(error => {
-            console.error('Error toggling seat:', error);
-        });
-    });
 });
 {% endif %}
 
@@ -1189,6 +893,7 @@ document.querySelectorAll('.seat-btn').forEach(function(btn) {
     const sendBtn = document.getElementById('driverSendChat');
 
     let groupedNotifications = {};  // Store grouped notifications
+    let selectedUserId = null;  // ⭐ NEW: Track selected user for chat
 
     function setBadge(count){
         if (!notifBadge) return;
@@ -1215,7 +920,7 @@ document.querySelectorAll('.seat-btn').forEach(function(btn) {
         let html = '';
         sortedGroups.forEach((group, index) => {
             const rankNum = index + 1;
-            const rankEmoji = rankNum === 1 ? '' : rankNum === 2 ? '' : rankNum === 3 ? '' : '📍';
+            const rankEmoji = rankNum === 1 ? '🥇' : rankNum === 2 ? '🥈' : rankNum === 3 ? '🥉' : '📍';
             
             html += `
                 <div class="notification-group">
@@ -1276,8 +981,12 @@ document.querySelectorAll('.seat-btn').forEach(function(btn) {
                     return;
                 }
                 
-                const userId = this.getAttribute('data-user-id');
+                const userId = parseInt(this.getAttribute('data-user-id'));
                 const pickupId = this.getAttribute('data-pickup-id');
+                
+                // ⭐ CRITICAL: Store selected user ID for chat
+                selectedUserId = userId;
+                console.log('✅ Selected user for chat:', selectedUserId);
                 
                 // Mark as selected
                 document.querySelectorAll('.passenger-item').forEach(i => {
@@ -1417,6 +1126,10 @@ document.querySelectorAll('.seat-btn').forEach(function(btn) {
             }
         } else if (data.type === 'chat_message') {
             addChatMessage(data);
+        } else if (data.type === 'error') {
+            // ⭐ NEW: Handle error messages from backend
+            console.error('❌ Chat error:', data.message);
+            alert(data.message);
         }
     };
 
@@ -1492,6 +1205,7 @@ document.querySelectorAll('.seat-btn').forEach(function(btn) {
                 groupedNotifications = {};
                 notifBox.innerHTML = '<div style="text-align: center; color: #9ca3af; padding: 20px;">No notifications yet</div>';
                 setBadge(0);
+                selectedUserId = null;  // ⭐ Clear selected user
             }
             this.disabled = false;
             this.textContent = 'Clear All';
@@ -1503,43 +1217,40 @@ document.querySelectorAll('.seat-btn').forEach(function(btn) {
         });
     });
 
-    // Send chat message
+    // ⭐ FIXED: Send chat message with proper recipient_id
     sendBtn.addEventListener('click', function(){
         const content = chatInput.value.trim();
         if (!content) return;
         
-        const selectedItem = document.querySelector('.passenger-item[style*="background"]');
-        const recipientId = selectedItem ? selectedItem.getAttribute('data-user-id') : null;
-        
-        if (!recipientId) {
-            alert('Please select a passenger from notifications first.');
+        // ⭐ CRITICAL: Use the selected user ID
+        if (!selectedUserId) {
+            alert('Please select a passenger from notifications first');
+            console.error('❌ No passenger selected');
             return;
         }
 
         const payload = {
             type: 'chat_message',
             content: content,
-            recipient_id: parseInt(recipientId),
+            recipient_id: selectedUserId,  // ⭐ Use selected user
             bus_id: {% if bus %}{{ bus.id }}{% else %}null{% endif %}
         };
         
+        console.log('📤 Sending chat message:', payload);
         driverSocket.send(JSON.stringify(payload));
         chatInput.value = '';
     });
 
     // Clear chat
     document.getElementById('clearDriverChat').addEventListener('click', function(){
-        const selectedItem = document.querySelector('.passenger-item[style*="background"]');
-        const recipientId = selectedItem ? selectedItem.getAttribute('data-user-id') : null;
-        
-        if (!recipientId) {
+        if (!selectedUserId) {
             alert('Please select a conversation first.');
             return;
         }
         
         if (!confirm('Clear all messages with this user?')) return;
         
-        fetch('/api/clear_chat/' + recipientId + '/', {
+        fetch('/api/clear_chat/' + selectedUserId + '/', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded',
